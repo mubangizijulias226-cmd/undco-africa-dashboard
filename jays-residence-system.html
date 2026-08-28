@@ -62,6 +62,20 @@
     font-size:13px;
     color:var(--ink);
   }
+  #saveBtn{
+    font-family:'Inter',sans-serif;
+    font-weight:700;
+    font-size:12.5px;
+    background:var(--teal);
+    color:#fff;
+    border:none;
+    border-radius:20px;
+    padding:6px 16px;
+    cursor:pointer;
+  }
+  #saveBtn:hover{background:var(--ink);}
+  .save-status{font-size:11px;color:var(--ink-soft);font-family:'IBM Plex Mono',monospace;}
+  .save-status.err{color:var(--rust);font-weight:600;}
 
   .stat-strip{
     display:grid;
@@ -282,6 +296,8 @@
     <input type="month" id="monthInput">
     <label for="currencyInput">Currency</label>
     <input type="text" id="currencyInput" maxlength="3" style="width:44px">
+    <button id="saveBtn" type="button">Save</button>
+    <span id="saveStatus" class="save-status"></span>
   </div>
 </header>
 
@@ -439,33 +455,66 @@
     return s;
   }
 
+  // FIREBASE_URL: paste your Realtime Database URL here (e.g. https://your-project-default-rtdb.firebaseio.com)
+  // once set, Save/Load will sync everyone to the same shared data instead of per-device local storage.
+  const FIREBASE_URL = '';
+  const REMOTE_PATH = 'jays-residence-system';
+
+  function hasRemote(){ return !!FIREBASE_URL; }
+
   async function loadState(){
+    if(hasRemote()){
+      try{
+        const res = await fetch(FIREBASE_URL.replace(/\/$/,'') + '/' + REMOTE_PATH + '.json');
+        const data = await res.json();
+        if(data){ state = Object.assign(defaultState(), data); if(!state.months[state.currentMonth]) state.months[state.currentMonth] = emptyMonth(); return; }
+      }catch(e){ console.error('Remote load failed', e); }
+      state = defaultState();
+      return;
+    }
     try{
-      const result = await window.storage.get(STORAGE_KEY, true);
-      if(result && result.value){
-        const parsed = JSON.parse(result.value);
-        state = Object.assign(defaultState(), parsed);
+      const raw = localStorage.getItem(STORAGE_KEY);
+      if(raw){
+        state = Object.assign(defaultState(), JSON.parse(raw));
         if(!state.months[state.currentMonth]) state.months[state.currentMonth] = emptyMonth();
         return;
       }
-    }catch(e){ /* fall through to old key / default */ }
+    }catch(e){ /* fall through */ }
     try{
-      const old = await window.storage.get(OLD_STORAGE_KEY, true);
-      if(old && old.value){
-        state = migrateOldShape(JSON.parse(old.value));
-        queueSave();
-        return;
-      }
+      const old = localStorage.getItem(OLD_STORAGE_KEY);
+      if(old){ state = migrateOldShape(JSON.parse(old)); saveNow(); return; }
     }catch(e){ /* no old data either */ }
     state = defaultState();
   }
 
+  function setSaveStatus(text, ok){
+    const el = document.getElementById('saveStatus');
+    if(!el) return;
+    el.textContent = text;
+    el.classList.toggle('err', ok===false);
+  }
+
+  async function saveNow(){
+    setSaveStatus('Saving…');
+    try{
+      if(hasRemote()){
+        await fetch(FIREBASE_URL.replace(/\/$/,'') + '/' + REMOTE_PATH + '.json', {
+          method:'PUT', headers:{'Content-Type':'application/json'}, body: JSON.stringify(state)
+        });
+      } else {
+        localStorage.setItem(STORAGE_KEY, JSON.stringify(state));
+      }
+      setSaveStatus('Saved ✓ ' + new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}), true);
+    }catch(e){
+      console.error('Save failed', e);
+      setSaveStatus('Save failed — try again', false);
+    }
+  }
+
   function queueSave(){
+    setSaveStatus('Unsaved changes');
     clearTimeout(saveTimer);
-    saveTimer = setTimeout(async ()=>{
-      try{ await window.storage.set(STORAGE_KEY, JSON.stringify(state), true); }
-      catch(e){ console.error('Save failed', e); }
-    }, 250);
+    saveTimer = setTimeout(saveNow, 600);
   }
 
   function getMonth(key){
@@ -745,10 +794,15 @@
   });
 
   document.getElementById('resetBtn').addEventListener('click', async ()=>{
-    if(!confirm('This clears all shared household data for everyone. Continue?')) return;
+    if(!confirm('This clears all household data. Continue?')) return;
     state = defaultState();
-    try{ await window.storage.set(STORAGE_KEY, JSON.stringify(state), true); }catch(e){}
+    await saveNow();
     render();
+  });
+
+  document.getElementById('saveBtn').addEventListener('click', ()=>{
+    clearTimeout(saveTimer);
+    saveNow();
   });
 
   (async function init(){
